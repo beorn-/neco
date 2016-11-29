@@ -1,0 +1,189 @@
+#! /bin/sh
+#BSD 2-Clause License
+#
+#Copyright (c) 2016, Aurelien "beorn" Rougemont
+#All rights reserved.
+#
+#Redistribution and use in source and binary forms, with or without
+#modification, are permitted provided that the following conditions are met:
+#
+#* Redistributions of source code must retain the above copyright notice, this
+#  list of conditions and the following disclaimer.
+#
+#* Redistributions in binary form must reproduce the above copyright notice,
+#  this list of conditions and the following disclaimer in the documentation
+#  and/or other materials provided with the distribution.
+#
+#THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+#AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+#IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+#DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+#FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+#DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+#SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+#CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+#OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+#OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+set -u
+
+__VERSION__=0.1
+# TODO: add support devd
+# TODO: add openvpn support
+
+PATH=${PATH}:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin
+
+# default values
+: ${DEFAULT_PROFILE="default"}
+: ${RECONFIGURE_SERVICES_LIST="netif dhclient defaultroute"}
+: ${RESTART_SERVICES_LIST="netif defaultroute"}
+: ${CONF_D_PATH="/etc/rc.conf.d"}
+: ${QUIET=""}
+: ${SHOW_USAGE=""}
+: ${DO_RECONF=""}
+: ${SHOW_PROFILES=""}
+
+__usage() {
+    cat << EOF
+
+$0 $__VERSION__ is a dead simple non-intrusive profile switcher script meant for FreeBSD
+
+  $0 requires the rc.conf.d folder feature
+  $0 basicaly redirects
+    ${CONF_D_PATH}/netif => ${CONF_D_PATH}/netif.PROFILE
+    ${CONF_D_PATH}/dhclient => ${CONF_D_PATH}/netif.PROFILE
+    ${CONF_D_PATH}/defaultroute => ${CONF_D_PATH}/defaultroute.PROFILE
+  then $0 restarts: ${RESTART_SERVICES_LIST}
+
+Show current profile
+# $0 -s
+
+List available profiles
+# $0 -l
+
+Reconfigure to a given profile
+# $0 -r <profile>
+
+Reconfigure to the default profile
+# $0 -d
+
+EOF
+}
+
+__list_profiles() {
+    PROFILE_TYPE=$1
+    PROFILE_LIST=$(find ${CONF_D_PATH} -type f -name "${PROFILE_TYPE}.*")
+    echo "Available ${PROFILE_TYPE} profiles:"
+    for profile in ${PROFILE_LIST}
+    do
+        echo " - ${profile}"
+    done
+}
+
+__reconfigure_profile() {
+    FILE_PREFIX=$1
+    PROFILE=$2
+    LINK_FILENAME="${CONF_D_PATH}/${FILE_PREFIX}"
+    PROFILE_FILENAME="${LINK_FILENAME}.${PROFILE}"
+
+    echo Reconfiguring $FILE_PREFIX with profile $PROFILE
+    if [ ! -e "${PROFILE_FILENAME}" ]
+    then
+        touch "${PROFILE_FILENAME}"
+    fi
+    if [ -L "${LINK_FILENAME}" ]
+    then
+        rm "${LINK_FILENAME}"
+        # the dhclient rc.d script needs netif conf to run properly
+        if [ "dhclient" = "${FILE_PREFIX}" ]
+        then
+		PROFILE_FILENAME="${CONF_D_PATH}/netif.${PROFILE}"
+        fi
+        ln -s "${PROFILE_FILENAME}" "${LINK_FILENAME}"
+    else
+        echo "could not rm symbolic link ${LINK_FILENAME}" >&2
+        exit 1
+    fi
+    return 0
+}
+
+__profiles() {
+    for SERVICE in $RECONFIGURE_SERVICES_LIST
+    do
+        __list_profiles $SERVICE
+    done
+}
+
+__reconf() {
+    # XXX: need to ensure profile exists before reconf()
+
+    # unconstruct interfaces and stop services
+    for SERVICE in $RESTART_SERVICES_LIST
+    do
+        service $SERVICE stop $QUIET
+    done
+
+    # do the profile switch
+    for SERVICE in $RECONFIGURE_SERVICES_LIST
+    do
+        __reconfigure_profile $SERVICE $PROFILE
+    done
+
+    # construct interfaces and start services
+    for SERVICE in $RESTART_SERVICES_LIST
+    do
+        service $SERVICE start $QUIET
+    done
+}
+
+
+######################## MAIN
+if [ $# -eq 0 ]
+then
+  echo "ERROR: Missing param please use -h" >&2
+  exit 1
+fi
+
+while getopts "hqr:l" opt; do
+    case $opt in
+        h)
+            SHOW_USAGE=true
+            break
+            ;;
+        q)
+            QUIET="2>&1 1>/dev/null"
+            ;;
+        l)
+            SHOW_PROFILES=true
+            break
+            ;;
+        r)
+            DO_RECONF=true
+            PROFILE=$OPTARG
+            break
+            ;;
+        *)
+            __usage
+            exit 1
+            ;;
+  esac
+done
+
+if [ $SHOW_USAGE ]
+then
+    __usage
+    exit 0
+fi
+
+if [ $SHOW_PROFILES ]
+then
+    __profiles
+    exit 0
+fi
+
+if [ $DO_RECONF ]
+then
+    __reconf $PROFILE
+fi
+
+exit 0
